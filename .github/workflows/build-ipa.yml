@@ -1,0 +1,42 @@
+name: Compilar IPA - ServerStarter
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+jobs:
+  ipa:
+    runs-on: macos-26
+    steps:
+      - name: Descargar codigo
+        uses: actions/checkout@v4
+      - name: Verificar Xcode
+        run: xcodebuild -version
+      - name: Instalar XcodeGen
+        run: brew install xcodegen
+      - name: Generar proyecto
+        run: xcodegen generate
+      - name: Compilar app iOS sin firmar
+        run: |
+          xcodebuild \
+            -project ServerStarter.xcodeproj \
+            -scheme ServerStarter \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+      - name: Preparar IPA
+        run: |
+          mkdir -p dist/Payload
+          cp -R build/Build/Products/Release-iphoneos/ServerStarter.app dist/Payload/
+          cd dist
+          zip -qry ServerStarter-unsigned.ipa Payload
+      - name: Descargar IPA desde Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: ServerStarter-unsigned-IPA
+          path: dist/ServerStarter-unsigned.ipa
+          if-no-files-found: error
