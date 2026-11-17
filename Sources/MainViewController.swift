@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 /// ServerStarter: interfaz nativa. Liquid Glass real en iOS 26+.
 /// No declara modos de fondo falsos (audio, ubicación, VoIP).
-final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITabBarDelegate {
+final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITabBarDelegate, UITextViewDelegate {
     private enum ImportMode { case html, resources }
 
     private let server = LocalHTTPServer()
@@ -11,7 +11,7 @@ final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITa
     private let successColor = UIColor.systemGreen
     private let dangerColor = UIColor.systemRed
     private let muted = UIColor.secondaryLabel
-    private let background = UIColor.systemGroupedBackground
+    private let background = UIColor(red: 0.015, green: 0.055, blue: 0.075, alpha: 1)
     private let siteDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("ServerStarterSite", isDirectory: true)
 
@@ -30,7 +30,8 @@ final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITa
 
     private let scroll = UIScrollView()
     private let serverSections = UIStackView()
-    private let activitySections = UIStackView()
+    private let editorSections = UIStackView()
+    private let settingsSections = UIStackView()
     private let navigationBar = UITabBar()
     private let activityStatusLabel = UILabel()
     private let recentRequestsLabel = UILabel()
@@ -44,8 +45,10 @@ final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITa
     private let startButton = UIButton(type: .system)
     private let stopButton = UIButton(type: .system)
     private let previewButton = UIButton(type: .system)
-    private let copyButton = UIButton(type: .system)
+    private var serverStartedAt: Date?
+    private var uptimeTimer: Timer?
     private let exampleButton = UIButton(type: .system)
+    private let editorTextView = UITextView()
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -73,12 +76,16 @@ final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITa
                                                name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(willEnterForeground),
                                                name: UIApplication.willEnterForegroundNotification, object: nil)
+        uptimeTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
         keepAwakeToggle.isOn = UserDefaults.standard.bool(forKey: "keepScreenOn")
         refresh()
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        uptimeTimer?.invalidate()
         server.stop()
     }
 
@@ -87,13 +94,13 @@ final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITa
         scroll.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(scroll)
 
-        // UITabBar del sistema: Liquid Glass nativo donde lo admite iOS.
-        // Dos pestañas: Servidor y Estado. No hay editor ni ajustes ficticios.
+        // Navegación inferior con las tres áreas visibles en la referencia.
         navigationBar.translatesAutoresizingMaskIntoConstraints = false
         navigationBar.delegate = self
         navigationBar.items = [
             UITabBarItem(title: "Servidor", image: UIImage(systemName: "server.rack"), tag: 0),
-            UITabBarItem(title: "Estado", image: UIImage(systemName: "info.circle.fill"), tag: 1)
+            UITabBarItem(title: "Editor", image: UIImage(systemName: "chevron.left.forwardslash.chevron.right"), tag: 1),
+            UITabBarItem(title: "Ajustes", image: UIImage(systemName: "gearshape"), tag: 2)
         ]
         navigationBar.selectedItem = navigationBar.items?.first
         navigationBar.tintColor = accent
@@ -121,19 +128,18 @@ final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITa
             content.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -40)
         ])
 
-        for sectionStack in [serverSections, activitySections] {
+        for sectionStack in [serverSections, editorSections, settingsSections] {
             sectionStack.axis = .vertical
             sectionStack.spacing = 17
             content.addArrangedSubview(sectionStack)
         }
-        activitySections.isHidden = true
+        editorSections.isHidden = true
+        settingsSections.isHidden = true
 
-        serverSections.addArrangedSubview(label("NEXORA · UTILIDADES", size: 12, weight: .semibold, color: accent))
         serverSections.addArrangedSubview(label("ServerStarter", size: 33, weight: .bold, color: .label))
-        serverSections.addArrangedSubview(label("Tu servidor web local", size: 15, weight: .regular, color: muted))
+        serverSections.addArrangedSubview(label("Inicia un servidor local en tu iPhone.", size: 15, weight: .regular, color: muted))
 
         let statusPanel = makePanel()
-        statusPanel.addArrangedSubview(label("Estado del servidor", size: 13, weight: .medium, color: muted))
         statusLabel.font = .monospacedSystemFont(ofSize: 19, weight: .bold)
         statusPanel.addArrangedSubview(statusLabel)
         let url = label("http://localhost:8080", size: 16, weight: .semibold, color: .white)
@@ -147,7 +153,7 @@ final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITa
         statusPanel.addArrangedSubview(activityLabel)
         serverSections.addArrangedSubview(statusPanel)
 
-        serverSections.addArrangedSubview(section("01", "Archivos"))
+        serverSections.addArrangedSubview(section("", "Archivos"))
         let filePanel = makePlainPanel()
         selectedLabel.font = .systemFont(ofSize: 17, weight: .semibold)
         selectedLabel.textColor = .white
@@ -157,8 +163,16 @@ final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITa
         resourcesLabel.textColor = muted
         resourcesLabel.numberOfLines = 0
         filePanel.addArrangedSubview(resourcesLabel)
-        filePanel.addArrangedSubview(makeButton("Elegir HTML", symbol: "doc.text", action: #selector(selectHTML), emphasized: false))
-        filePanel.addArrangedSubview(makeButton("Añadir CSS, JS e imágenes", symbol: "folder.badge.plus", action: #selector(selectResources), emphasized: false))
+        let fileActions = UIStackView()
+        fileActions.axis = .horizontal
+        fileActions.spacing = 10
+        let chooseHTML = makeButton("Elegir HTML", symbol: "folder", action: #selector(selectHTML), emphasized: false)
+        let addResources = makeButton("Añadir recursos", symbol: "square.stack.3d.up", action: #selector(selectResources), emphasized: false)
+        chooseHTML.titleLabel?.adjustsFontSizeToFitWidth = true
+        addResources.titleLabel?.adjustsFontSizeToFitWidth = true
+        fileActions.addArrangedSubview(chooseHTML)
+        fileActions.addArrangedSubview(addResources)
+        filePanel.addArrangedSubview(fileActions)
         exampleButton.setTitle("Usar página de ejemplo", for: .normal)
         exampleButton.tintColor = accent
         exampleButton.titleLabel?.font = .systemFont(ofSize: 13, weight: .medium)
@@ -167,24 +181,45 @@ final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITa
         filePanel.addArrangedSubview(exampleButton)
         serverSections.addArrangedSubview(filePanel)
 
-        serverSections.addArrangedSubview(section("02", "Control del servidor"))
+        serverSections.addArrangedSubview(section("", "Control del servidor"))
         configureButton(startButton, title: "Iniciar servidor", symbol: "play.fill", emphasized: true, tint: successColor)
         startButton.addTarget(self, action: #selector(startServer), for: .touchUpInside)
-        serverSections.addArrangedSubview(startButton)
         configureButton(stopButton, title: "Terminar servidor", symbol: "stop.fill", emphasized: true, tint: dangerColor)
         stopButton.addTarget(self, action: #selector(stopServer), for: .touchUpInside)
-        serverSections.addArrangedSubview(stopButton)
+        let serverActions = UIStackView()
+        serverActions.axis = .horizontal
+        serverActions.spacing = 10
+        serverActions.distribution = .fillEqually
+        serverActions.addArrangedSubview(startButton)
+        serverActions.addArrangedSubview(stopButton)
+        serverSections.addArrangedSubview(serverActions)
 
-        serverSections.addArrangedSubview(section("03", "Página web"))
-        serverSections.addArrangedSubview(label("Abrí tu HTML en localhost:8080 sin salir de la app. Si el servidor está detenido, se inicia automáticamente.", size: 13, weight: .regular, color: muted))
+        serverSections.addArrangedSubview(section("", "Página web"))
         configureButton(previewButton, title: "Vista previa", symbol: "safari.fill", emphasized: true, tint: accent)
         previewButton.addTarget(self, action: #selector(openPreview), for: .touchUpInside)
+        previewButton.setTitle("Vista previa\nAbrir http://localhost:8080", for: .normal)
         serverSections.addArrangedSubview(previewButton)
-        configureButton(copyButton, title: "Copiar localhost:8080", symbol: "link", emphasized: false)
-        copyButton.addTarget(self, action: #selector(copyURL), for: .touchUpInside)
-        serverSections.addArrangedSubview(copyButton)
 
-        serverSections.addArrangedSubview(section("04", "Segundo plano"))
+        // Editor real del index.html guardado en la carpeta servida.
+        editorSections.addArrangedSubview(label("Editor", size: 33, weight: .bold, color: .label))
+        editorSections.addArrangedSubview(label("Editá el HTML del sitio y guardalo en index.html.", size: 14, weight: .regular, color: muted))
+        editorTextView.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
+        editorTextView.textColor = .label
+        editorTextView.backgroundColor = .secondarySystemGroupedBackground
+        editorTextView.layer.cornerRadius = 16
+        editorTextView.textContainerInset = UIEdgeInsets(top: 14, left: 12, bottom: 14, right: 12)
+        editorTextView.autocapitalizationType = .none
+        editorTextView.autocorrectionType = .no
+        editorTextView.spellCheckingType = .no
+        editorTextView.delegate = self
+        editorTextView.heightAnchor.constraint(greaterThanOrEqualToConstant: 360).isActive = true
+        editorSections.addArrangedSubview(editorTextView)
+        editorSections.addArrangedSubview(makeButton("Guardar index.html", symbol: "square.and.arrow.down", action: #selector(saveEditor), emphasized: true))
+        editorSections.addArrangedSubview(makeButton("Abrir vista previa", symbol: "safari", action: #selector(openPreview), emphasized: false))
+
+        settingsSections.addArrangedSubview(label("Ajustes", size: 33, weight: .bold, color: .label))
+        settingsSections.addArrangedSubview(label("Opciones del servidor local.", size: 14, weight: .regular, color: muted))
+        settingsSections.addArrangedSubview(section("", "Pantalla"))
         let backgroundPanel = makePlainPanel()
         backgroundPanel.addArrangedSubview(label("iOS puede suspender el servidor al salir de la app o bloquear el iPhone. ServerStarter intenta continuar por un tiempo limitado y reinicia el servidor al volver.", size: 13, weight: .regular, color: muted))
         let keepAwakeRow = UIStackView()
@@ -198,19 +233,17 @@ final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITa
         keepAwakeToggle.onTintColor = accent
         keepAwakeToggle.addTarget(self, action: #selector(toggleScreenAwake), for: .valueChanged)
         backgroundPanel.addArrangedSubview(keepAwakeRow)
-        serverSections.addArrangedSubview(backgroundPanel)
+        settingsSections.addArrangedSubview(backgroundPanel)
 
-        activitySections.addArrangedSubview(label("NEXORA · UTILIDADES", size: 12, weight: .semibold, color: accent))
-        activitySections.addArrangedSubview(label("Estado", size: 33, weight: .bold, color: .label))
-        activitySections.addArrangedSubview(label("Información del servidor, solicitudes recibidas y eventos recientes.", size: 14, weight: .regular, color: muted))
+        settingsSections.addArrangedSubview(section("", "Actividad reciente"))
 
         let statusCard = makePanel()
         statusCard.addArrangedSubview(label("ESTADO ACTUAL", size: 12, weight: .semibold, color: muted))
         activityStatusLabel.font = .monospacedSystemFont(ofSize: 18, weight: .semibold)
         statusCard.addArrangedSubview(activityStatusLabel)
-        activitySections.addArrangedSubview(statusCard)
+        settingsSections.addArrangedSubview(statusCard)
 
-        activitySections.addArrangedSubview(section("01", "Resumen"))
+        settingsSections.addArrangedSubview(section("", "Resumen"))
         let logs = makePlainPanel()
         logLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         logLabel.textColor = muted
@@ -219,23 +252,47 @@ final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITa
         countLabel.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
         countLabel.textColor = accent
         logs.addArrangedSubview(countLabel)
-        activitySections.addArrangedSubview(logs)
+        settingsSections.addArrangedSubview(logs)
 
-        activitySections.addArrangedSubview(section("02", "Últimas solicitudes"))
+        settingsSections.addArrangedSubview(section("", "Últimas solicitudes"))
         let recentRequests = makePlainPanel()
         recentRequestsLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         recentRequestsLabel.textColor = muted
         recentRequestsLabel.numberOfLines = 0
         recentRequests.addArrangedSubview(recentRequestsLabel)
-        activitySections.addArrangedSubview(recentRequests)
-        activitySections.addArrangedSubview(label("Historial temporal de las últimas 25 peticiones. Se borra al cerrar la app.", size: 12, weight: .regular, color: muted))
-        serverSections.addArrangedSubview(label("Solo en este iPhone • 127.0.0.1:8080 • Sin anuncios", size: 12, weight: .regular, color: muted))
+        settingsSections.addArrangedSubview(recentRequests)
+        settingsSections.addArrangedSubview(label("Historial temporal de las últimas 25 peticiones. Se borra al cerrar la app.", size: 12, weight: .regular, color: muted))
+        settingsSections.addArrangedSubview(makeButton("Copiar URL del servidor", symbol: "link", action: #selector(copyURL), emphasized: false))
+        settingsSections.addArrangedSubview(label("iOS puede pausar el servidor al suspender la app. Mantén ServerStarter visible para mayor continuidad.", size: 12, weight: .regular, color: muted))
     }
 
     func tabBar(_ tabBar: UITabBar, didSelect item: UITabBarItem) {
         serverSections.isHidden = item.tag != 0
-        activitySections.isHidden = item.tag != 1
+        editorSections.isHidden = item.tag != 1
+        settingsSections.isHidden = item.tag != 2
         scroll.setContentOffset(.zero, animated: false)
+        if item.tag == 1 { loadEditorIfNeeded() }
+    }
+
+    private func loadEditorIfNeeded() {
+        guard !editorTextView.isFirstResponder else { return }
+        guard let html = try? String(contentsOf: siteDirectory.appendingPathComponent("index.html"), encoding: .utf8) else {
+            editorTextView.text = "<!doctype html>\n<html lang=\"es\">\n<head>\n  <meta charset=\"utf-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n  <title>Mi sitio</title>\n</head>\n<body>\n  <h1>Mi sitio local</h1>\n  <p>Tu página ya está lista para editar.</p>\n</body>\n</html>"
+            return
+        }
+        editorTextView.text = html
+    }
+
+    @objc private func saveEditor() {
+        do {
+            try editorTextView.text.write(to: siteDirectory.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
+            UserDefaults.standard.set("index.html", forKey: "selectedHTMLName")
+            lastLog = "index.html guardado"
+            refresh()
+        } catch {
+            lastLog = "No se pudo guardar index.html: \(error.localizedDescription)"
+            refresh()
+        }
     }
 
     private func label(_ title: String, size: CGFloat, weight: UIFont.Weight, color: UIColor) -> UILabel {
@@ -247,8 +304,28 @@ final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITa
         return output
     }
 
-    private func section(_ number: String, _ title: String) -> UILabel {
-        label("\(number)  /  \(title)", size: 13, weight: .semibold, color: accent)
+    private func section(_ number: String, _ title: String) -> UIView {
+        let icon: String
+        switch title {
+        case "Archivos": icon = "folder"
+        case "Control del servidor": icon = "server.rack"
+        case "Página web": icon = "globe"
+        case "Pantalla": icon = "display"
+        case "Actividad reciente", "Resumen": icon = "chart.bar"
+        default: icon = "list.bullet"
+        }
+        let row = UIStackView()
+        row.axis = .horizontal
+        row.alignment = .center
+        row.spacing = 9
+        let image = UIImageView(image: UIImage(systemName: icon))
+        image.tintColor = accent
+        image.contentMode = .scaleAspectFit
+        image.widthAnchor.constraint(equalToConstant: 22).isActive = true
+        image.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        row.addArrangedSubview(image)
+        row.addArrangedSubview(label(title, size: 18, weight: .semibold, color: .label))
+        return row
     }
 
     private func makePanel() -> UIStackView {
@@ -322,15 +399,18 @@ final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITa
         let hasHTML = FileManager.default.fileExists(atPath: siteDirectory.appendingPathComponent("index.html").path)
         let fileCount = (try? FileManager.default.contentsOfDirectory(atPath: siteDirectory.path).count) ?? 0
         let selected = UserDefaults.standard.string(forKey: "selectedHTMLName") ?? "index.html"
-        selectedLabel.text = hasHTML ? "\(selected)  ✓" : "No seleccionaste un HTML"
-        resourcesLabel.text = hasHTML ? "\(max(0, fileCount - 1)) recursos adicionales guardados" : "Elegí un archivo desde Archivos"
+        selectedLabel.text = hasHTML ? "\(selected)  ›" : "No seleccionaste un HTML"
+        let htmlURL = siteDirectory.appendingPathComponent("index.html")
+        let attributes = try? FileManager.default.attributesOfItem(atPath: htmlURL.path)
+        let bytes = (attributes?[.size] as? NSNumber)?.intValue ?? 0
+        let fileSize = bytes < 1024 ? "\(bytes) B" : String(format: "%.1f KB", Double(bytes) / 1024)
+        resourcesLabel.text = hasHTML ? "\(fileSize) · \(max(0, fileCount - 1)) recursos" : "Elegí un archivo desde Archivos"
         statusLabel.text = lastStatus
         statusLabel.textColor = running ? successColor : (starting ? .systemOrange : .white)
         startButton.isEnabled = hasHTML && !running && !starting && !wantsServer
         stopButton.isEnabled = wantsServer || running || starting
         previewButton.isEnabled = hasHTML && !starting
-        copyButton.isEnabled = running
-        for control in [startButton, stopButton, previewButton, copyButton] {
+        for control in [startButton, stopButton, previewButton] {
             control.alpha = control.isEnabled ? 1 : 0.45
         }
         exampleButton.isHidden = hasHTML
@@ -340,6 +420,10 @@ final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITa
         activityStatusLabel.textColor = running ? successColor : (starting ? .systemOrange : .label)
         recentRequestsLabel.text = requestHistory.isEmpty ? "Todavía no hay peticiones. Abrí Vista previa para probar el servidor." : requestHistory.joined(separator: "\n\n")
         activityLabel.text = pausedByIOS ? "iOS pausó el servicio · Se reinicia al volver" : (running ? "Escuchando solo en este dispositivo" : "El puerto está cerrado")
+        if running, let startedAt = serverStartedAt {
+            let elapsed = max(0, Int(Date().timeIntervalSince(startedAt)))
+            activityLabel.text = String(format: "%02d:%02d:%02d activo · Solo en este iPhone", elapsed / 3600, (elapsed % 3600) / 60, elapsed % 60)
+        }
         UIApplication.shared.isIdleTimerDisabled = keepAwakeToggle.isOn && (running || starting)
     }
 
@@ -353,7 +437,8 @@ final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITa
             running = true
             starting = false
             pausedByIOS = false
-            lastStatus = "● ACTIVO · 8080"
+            if serverStartedAt == nil { serverStartedAt = Date() }
+            lastStatus = "● Servidor activo"
             lastLog = "Servidor escuchando en 127.0.0.1:8080"
             if previewAfterStarting {
                 previewAfterStarting = false
@@ -362,12 +447,14 @@ final class MainViewController: UIViewController, UIDocumentPickerDelegate, UITa
         case .stopped:
             running = false
             starting = false
+            serverStartedAt = nil
             lastStatus = pausedByIOS ? "Ⅱ PAUSADO POR iOS" : "○ DETENIDO"
         case .failed(let reason):
             previewAfterStarting = false
             running = false
             starting = false
             wantsServer = false
+            serverStartedAt = nil
             lastStatus = "✕ ERROR"
             lastLog = reason
         }

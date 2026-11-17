@@ -4,11 +4,12 @@ Servidor HTTP local `http://localhost:8080`, app nativa Swift + UIKit + Network.
 
 ## Navegación
 
-Barra inferior nativa con **Servidor** y **Estado** (sin Editor ni Ajustes). En Estado aparecen el estado actual del servidor, el contador de solicitudes y los últimos registros.
+Barra inferior con **Servidor**, **Editor** y **Ajustes**, siguiendo la pantalla de referencia. El editor modifica el `index.html` que sirve el servidor; Ajustes contiene pantalla siempre activa, estado, contador y solicitudes recientes.
 
 ## Funciones incluidas
 
 - Seleccioná un `.html` desde **Archivos**: se guarda como `Documents/ServerStarterSite/index.html`.
+- Si todavía no hay HTML, el editor ofrece una página inicial que podés modificar y guardar.
 - Importá CSS, JS e imágenes en la misma carpeta para utilizar rutas relativas.
 - Iniciá el servidor en `127.0.0.1:8080` y mirá su estado y peticiones.
 - **TERMINAR SERVIDOR** cancela el listener y todas las conexiones abiertas, impidiendo un reinicio automático involuntario.
@@ -17,6 +18,13 @@ Barra inferior nativa con **Servidor** y **Estado** (sin Editor ni Ajustes). En 
 - Ícono azul ServerStarter. Botón **Terminar servidor** rojo, **Iniciar servidor** verde y **Vista previa** cian; colores del sistema discretos con Liquid Glass nativo.
 - Selector **Mantener pantalla encendida** para uso prolongado mientras la app está visible (consume batería).
 - Copiar la URL al portapapeles.
+
+## LiveContainer
+
+- La app no requiere JIT: usa UIKit, WebKit, Foundation y Network.framework.
+- El proyecto apunta a iOS 16 o posterior y conserva el selector de documentos y el servidor loopback en `127.0.0.1`.
+- La IPA de GitHub Actions se importa en LiveContainer y se inicia desde allí. La compatibilidad final depende de la versión de LiveContainer/iOS; probá el selector de archivos y `http://localhost:8080` en el dispositivo.
+- LiveContainer documenta que los permisos de la app invitada se aplican globalmente y que algunas apps no son compatibles. Si Archivos no abre, activá **Fix File Picker** en los ajustes de ServerStarter dentro de LiveContainer.
 
 ## Segundo plano: limitación real de iOS
 
@@ -32,9 +40,9 @@ Barra inferior nativa con **Servidor** y **Estado** (sin Editor ni Ajustes). En 
 2. Abrí **GitHub → Actions → Compilar IPA - ServerStarter → Run workflow**.
 3. El workflow usa un runner `macos-26` con Xcode, instala XcodeGen, compila para iPhone y empaqueta la app.
 4. Descargá el artifact `ServerStarter-unsigned-IPA` y extraé `ServerStarter-unsigned.ipa`.
-5. Firmá la IPA mediante SideStore u otra herramienta compatible antes de instalar.
+5. Importá la IPA en LiveContainer. Para iniciar sin JIT, configurá primero el certificado de firma de LiveContainer; también podés firmarla con SideStore antes de importarla.
 
-**Este ZIP es el proyecto fuente; NO contiene una IPA compilada.** Acá se verificó la sintaxis de todos los Swift y la estructura del proyecto, pero la compilación iOS requiere macOS/Xcode y la prueba final en un iPhone real.
+**Este proyecto fuente no contiene una IPA compilada.** La compilación requiere macOS/Xcode y la prueba final de LiveContainer debe hacerse en un iPhone real.
 
 ## Detalles
 
